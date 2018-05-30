@@ -1,0 +1,451 @@
+#include <stdio.h>
+#include <string.h>
+#include <jpeglib.h>
+#include <setjmp.h>
+#include <stdlib.h>
+
+#include "imageProcessor.h"
+
+int imageHeight;
+int imageWidth;
+
+unsigned char *p_arrayImage;
+
+const char COLOR_0 = 0x00;
+const char COLOR_255 = 0xFF;
+
+int read_JPEG_file(char *filename) {
+
+	struct jpeg_decompress_struct cinfo;
+	struct jpeg_error_mgr jerr;
+
+	FILE *infile;
+
+	if ((infile = fopen(filename, "rb")) == NULL) {
+		fprintf(stderr, "can't open %s\n", filename);
+		return 0;
+	}
+	// Register error structure.
+	cinfo.err = jpeg_std_error(&jerr);
+
+	jpeg_create_decompress(&cinfo);
+
+	jpeg_stdio_src(&cinfo, infile);
+
+	jpeg_read_header(&cinfo, TRUE);
+
+	jpeg_start_decompress(&cinfo);
+
+	// Set class variables.
+	imageWidth = cinfo.output_width;
+	imageHeight = cinfo.output_height;
+
+	// Set the rowStride, should be 3(red, green, blue) * width of the image.
+	int rowStride = cinfo.output_width * cinfo.output_components;
+
+	// Creating the line buffer, the last param is for the line height.
+	// Set to 1 for when we read 1 line in at a time.
+	JSAMPARRAY buffer = (*cinfo.mem->alloc_sarray)
+		((j_common_ptr) &cinfo, JPOOL_IMAGE, rowStride, 1);
+
+	// Array that will hold the images data.
+	unsigned char imageArray[imageHeight * (imageWidth * 3)];
+
+	// A global pointer to the images data.
+	p_arrayImage = imageArray;
+
+	int totalDataPlace = 0;
+	while (cinfo.output_scanline < cinfo.output_height) {
+
+		jpeg_read_scanlines(&cinfo, buffer, 1);
+
+		for (int i=0; i < rowStride; i++) {
+			imageArray[totalDataPlace] = (unsigned char) buffer[0][i];
+			totalDataPlace++;
+		}
+	}
+
+	jpeg_finish_decompress(&cinfo);
+
+	jpeg_destroy_decompress(&cinfo);
+
+	fclose(infile);
+
+	return 0;
+
+}
+
+int write_JPEG_file(char *filename) {
+
+	int quality = 100;
+
+	struct jpeg_compress_struct cinfo;
+	struct jpeg_error_mgr jerr;
+
+	FILE *outfile;
+	JSAMPROW row_pointer[1];
+	int rowStride;
+
+	// Register the error structure.
+	cinfo.err = jpeg_std_error(&jerr);
+	jpeg_create_compress(&cinfo);
+
+	// Open the file for writing.
+	if ((outfile = fopen(filename, "wb")) == NULL) {
+		fprintf(stderr, "can't open %s\n", filename);
+		return 0;
+	}
+	jpeg_stdio_dest(&cinfo, outfile);
+
+	cinfo.image_width = imageWidth;
+	cinfo.image_height = imageHeight;
+	cinfo.input_components = 3;
+	cinfo.in_color_space = JCS_RGB;
+
+	jpeg_set_defaults(&cinfo);
+
+	jpeg_set_quality(&cinfo, quality, TRUE);
+
+	jpeg_start_compress(&cinfo, TRUE);
+
+	rowStride = imageWidth * 3;
+	unsigned char rowPrint[rowStride];
+	int arrayImageindex = 0;
+
+	while (cinfo.next_scanline < cinfo.image_height) {
+
+		for (int i = 0; i < rowStride; i = i + 3) {
+
+			rowPrint[i] = p_arrayImage[arrayImageindex];
+			rowPrint[i + 1] = p_arrayImage[arrayImageindex + 1];
+			rowPrint[i + 2] = p_arrayImage[arrayImageindex + 2];
+
+			arrayImageindex = arrayImageindex + 3;
+
+		}
+
+		row_pointer[0] = (JSAMPROW) &rowPrint;
+
+		jpeg_write_scanlines(&cinfo, row_pointer, 1);
+	}
+
+	jpeg_finish_compress(&cinfo);
+
+	fclose(outfile);
+
+	jpeg_destroy_compress(&cinfo);
+
+	return 0;
+
+}
+
+void debugPrintPixelColor(int x, int y) {
+	int arrayImageindex = 0;
+	int breakpoint = 0;
+	int rowStride = imageWidth * 3;
+	for(int heightIndex = 0; heightIndex < imageHeight; heightIndex++) {
+		for(int widthIndex = 0; widthIndex < rowStride; widthIndex = widthIndex + 3) {
+			if (widthIndex == x && heightIndex == y) {
+				int red   = (int) p_arrayImage[arrayImageindex + 0];
+				int green = (int) p_arrayImage[arrayImageindex + 1];
+				int blue  = (int) p_arrayImage[arrayImageindex + 2];
+
+				printf("DEBUG: r: %i, g: %i, b: %i, widthIndex: %i, heightIndex: %i, arrayIndex: %i\n", red, green, blue, widthIndex, heightIndex, arrayImageindex);
+			}
+			arrayImageindex = arrayImageindex + 3;
+		}
+	}
+}
+
+void filterColorRed(int *red, int *green, int *blue) {
+	if (*red + 155 <= 255) {
+		*red = *red + 155;
+	}
+}
+
+void filterBlackCat(int *red, int *green, int *blue) {
+	int blackShade = 150;
+	if (*red < blackShade && *green < blackShade && *blue < blackShade) {
+		*red = 0;
+		*green = 0;
+		*blue = 0;
+	} else {
+		*red = 255;
+		*green = 255;
+		*blue = 255;
+	}
+}
+
+void filterRedBlackCat(int *red, int *green, int *blue) {
+	int blackShade = 150;
+	if (*red < blackShade && *green < blackShade && *blue < blackShade) {
+		*red = 0;
+		*green = 0;
+		*blue = 0;
+	} else {
+		*red = 255;
+		*green = 0;
+		*blue = 0;
+	}
+}
+
+void applyFilter(void (*fnc_ptr)(int *, int *, int *)) {
+
+	int rowStride = imageWidth * 3;
+	int arrayImageindex = 0;
+
+	for(int heightIndex = 0; heightIndex < imageHeight; heightIndex++) {
+		for(int widthIndex = 0; widthIndex < rowStride; widthIndex = widthIndex + 3) {
+
+			int red   = (int) p_arrayImage[arrayImageindex + 0];
+			int green = (int) p_arrayImage[arrayImageindex + 1];
+			int blue  = (int) p_arrayImage[arrayImageindex + 2];
+
+			//filterBlackCat(&red, &green, &blue);
+			(fnc_ptr)(&red, &green, &blue);
+
+			p_arrayImage[arrayImageindex + 0]  = (char) red;
+			p_arrayImage[arrayImageindex + 1]  = (char) green;
+			p_arrayImage[arrayImageindex + 2]  = (char) blue;
+
+			arrayImageindex = arrayImageindex + 3;
+
+		}
+
+	}
+}
+
+int findEyes_LeftToRight() {
+	// Red Lines Left -> Right
+	int changeCount = 0;
+	int rowStride = imageWidth * 3;
+	int arrayImageindex = 0;
+	for(int heightIndex = 0; heightIndex < imageHeight; heightIndex++) {
+		for(int widthIndex = 0; widthIndex < rowStride; widthIndex = widthIndex + 3) {
+
+			int red   = (int) p_arrayImage[arrayImageindex + 0];
+			int green = (int) p_arrayImage[arrayImageindex + 1];
+			int blue  = (int) p_arrayImage[arrayImageindex + 2];
+
+
+			if (widthIndex >= 3) {
+
+				int redLeft   = (int) p_arrayImage[arrayImageindex - 3];
+				int greenLeft = (int) p_arrayImage[arrayImageindex - 2];
+				int blueLeft  = (int) p_arrayImage[arrayImageindex - 1];
+
+				if ((redLeft == 255 && greenLeft == 0 && blueLeft == 0) && (red == 255 && green == 255 && blue == 255)) {
+					red = 255;
+					green = 0;
+					blue = 0;
+					changeCount++;
+				}
+
+			} else {
+				red = 255;
+				green = 0;
+				blue = 0;
+			}
+
+
+			p_arrayImage[arrayImageindex + 0]  = (char) red;
+			p_arrayImage[arrayImageindex + 1]  = (char) green;
+			p_arrayImage[arrayImageindex + 2]  = (char) blue;
+
+			arrayImageindex = arrayImageindex + 3;
+
+		}
+	}
+
+	return changeCount;
+}
+
+int findEyes_RightToLeft() {
+	// Red Lines Right <- Left
+	int changeCount = 0;
+	int rowStride = imageWidth * 3;
+	int arrayImageindex = (rowStride * imageHeight);
+	for(int heightIndex = imageHeight; heightIndex > 0; heightIndex--) {
+		for(int widthIndex = rowStride; widthIndex > 0; widthIndex = widthIndex - 3) {
+
+			int red   = (int) p_arrayImage[arrayImageindex + 0];
+			int green = (int) p_arrayImage[arrayImageindex + 1];
+			int blue  = (int) p_arrayImage[arrayImageindex + 2];
+
+			if (widthIndex < (rowStride - 3)) {
+
+				int redRight   = (int) p_arrayImage[arrayImageindex + 3];
+				int greenRight = (int) p_arrayImage[arrayImageindex + 4];
+				int blueRight  = (int) p_arrayImage[arrayImageindex + 5];
+
+				if ((redRight == 255 && greenRight == 0 && blueRight == 0) && (red == 255 && green == 255 && blue == 255)) {
+					red = 255;
+					green = 0;
+					blue = 0;
+					changeCount++;
+				}
+
+			} else {
+				red = 255;
+				green = 0;
+				blue = 0;
+			}
+
+			p_arrayImage[arrayImageindex + 0]  = (char) red;
+			p_arrayImage[arrayImageindex + 1]  = (char) green;
+			p_arrayImage[arrayImageindex + 2]  = (char) blue;
+
+			arrayImageindex = arrayImageindex - 3;
+
+		}
+	}
+
+	return changeCount;
+}
+
+int findEyes_UpToDown() {
+
+	// Make red if pixels is whight and top or bottom is red. - DOWN
+	int changeCount = 0;
+	int rowStride = imageWidth * 3;
+	int arrayImageindex = 0;
+	for(int heightIndex = 0; heightIndex < imageHeight; heightIndex++) {
+		for(int widthIndex = 0; widthIndex < rowStride; widthIndex = widthIndex + 3) {
+
+			int red   = (int) p_arrayImage[arrayImageindex + 0];
+			int green = (int) p_arrayImage[arrayImageindex + 1];
+			int blue  = (int) p_arrayImage[arrayImageindex + 2];
+
+			if (heightIndex > 0) {
+
+				int tempArray = arrayImageindex - rowStride;
+				int redAbove   = (int) p_arrayImage[tempArray + 0];
+				int greenAbove = (int) p_arrayImage[tempArray + 1];
+				int blueAbove  = (int) p_arrayImage[tempArray + 2];
+
+				if ((redAbove == 255 && greenAbove == 0 && blueAbove == 0) && (red == 255 && green == 255 && blue == 255)) {
+					red = 255;
+					green = 0;
+					blue = 0;
+					changeCount++;
+				}
+
+			}
+
+			p_arrayImage[arrayImageindex + 0]  = (char) red;
+			p_arrayImage[arrayImageindex + 1]  = (char) green;
+			p_arrayImage[arrayImageindex + 2]  = (char) blue;
+
+			arrayImageindex = arrayImageindex + 3;
+
+		}
+	}
+
+	return changeCount;
+}
+
+int findEyes_DownToUp() {
+	// Make red if pixels is whight and top or bottom is red. - UP
+	int changeCount = 0;
+	int rowStride = imageWidth * 3;
+	int arrayImageindex = (rowStride * imageHeight);
+	for(int heightIndex = imageHeight; heightIndex > 0; heightIndex--) {
+		for(int widthIndex = rowStride; widthIndex > 0; widthIndex = widthIndex - 3) {
+
+			int red   = (int) p_arrayImage[arrayImageindex + 0];
+			int green = (int) p_arrayImage[arrayImageindex + 1];
+			int blue  = (int) p_arrayImage[arrayImageindex + 2];
+
+			if (heightIndex < imageHeight) {
+
+				int tempArray = arrayImageindex + rowStride;
+				int redBelow   = (int) p_arrayImage[tempArray + 0];
+				int greenBelow = (int) p_arrayImage[tempArray + 1];
+				int blueBelow  = (int) p_arrayImage[tempArray + 2];
+
+				if ((redBelow == 255 && greenBelow == 0 && blueBelow == 0) && (red == 255 && green == 255 && blue == 255)) {
+					red = 255;
+					green = 0;
+					blue = 0;
+					changeCount++;
+				}
+
+			}
+
+			p_arrayImage[arrayImageindex + 0]  = (char) red;
+			p_arrayImage[arrayImageindex + 1]  = (char) green;
+			p_arrayImage[arrayImageindex + 2]  = (char) blue;
+
+			arrayImageindex = arrayImageindex - 3;
+
+		}
+	}
+
+	return changeCount;
+};
+
+void convertColor(int red, int green, int blue, int replaceRed, int replaceGreen, int replaceBlue) {
+	int arrayImageSize = ((imageWidth * 3) * imageHeight);
+	for(int i = 0; i < arrayImageSize; i = i + 3) {
+
+		int imageRed = p_arrayImage[i + 0];
+		int imageGreen = p_arrayImage[i + 1];
+		int imageBlue = p_arrayImage[i + 2];
+
+		if (imageRed == red && imageGreen == green && imageBlue == blue) {
+			p_arrayImage[i + 0]  = (char) replaceRed;
+			p_arrayImage[i + 1]  = (char) replaceGreen;
+			p_arrayImage[i + 2]  = (char) replaceBlue;
+		}
+
+	}
+}
+
+void findEyes() {
+
+	int rowStride = imageWidth * 3;
+	int arrayImageindex = 0;
+
+	int totalChange = 1;
+	int threshHold = 10;
+	int totalLoops = 0;
+	while(totalChange > 0 || totalLoops > threshHold) {
+		int lr = findEyes_LeftToRight();
+		int rl = findEyes_RightToLeft();
+		int ud = findEyes_UpToDown();
+		int du = findEyes_DownToUp();
+		totalChange = lr + rl + ud + du;
+		totalLoops++;
+		printf("Total Pixel Processed: %i\n", totalChange);
+	}
+
+	convertColor(255, 0, 0, 0, 0, 0);
+
+}
+
+
+
+int main(int argc, char **argv) {
+
+	void (*fun_ptr_filterBlackCat)(int *, int *, int *) = filterBlackCat;
+	void (*fun_ptr_filterColorRed)(int *, int *, int *) = filterColorRed;
+	void (*fun_ptr_filterRedBlackCat)(int *, int *, int *) = filterRedBlackCat;
+
+	printf("Reading Image.\n");
+	read_JPEG_file("/Users/jfreier/Projects/temp/opgl/cat.jpg");
+
+	printf("Appling Filter.\n");
+	applyFilter(filterBlackCat);
+
+	printf("Find Eyes.\n");
+	findEyes();
+
+	printf("Writing Image.\n");
+	write_JPEG_file("/Users/jfreier/Projects/temp/opgl/cat2.jpg");
+
+	printf("Image width: %d\n", imageWidth);
+	printf("Image height: %d\n", imageHeight);
+
+	return 1;
+
+}
